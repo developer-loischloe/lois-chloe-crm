@@ -1,10 +1,7 @@
 {
   "name": "lois-chloe-crm",
-  "version": "1.0.0",
-  "description": "Lois Chloé CRM Webhook Server for Messenger & Instagram",
-  "scripts": {
-    "start": "node api/webhook.js",
-    "dev": "node api/webhook.js"
-  },
-  "dependencies": {}
+  "version": "2.1.0",
+  "dependencies": {
+    "ioredis": "^5.4.1"
+  }
 }
