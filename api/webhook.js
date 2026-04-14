@@ -1,19 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════
-// LOIS CHLOÉ CRM BOT — v2 (Full Feature)
+// LOIS CHLOÉ CRM BOT — v2.1 (ioredis for TCP Redis)
 // Features: LLM fallback, conversation logger, multi-turn memory,
 // shade quiz, image analysis, order capture, email alerts, escalation,
 // knowledge base, A/B testing
-// All features are env-flag gated — activate by setting env vars.
 // ═══════════════════════════════════════════════════════════════════
 
 const VERIFY_TOKEN = "loischloe_crm_2026";
 
-// ─── ENV FLAGS (features auto-enable when env vars present) ───
+// ─── ENV FLAGS ───
 const HAS_LLM = !!process.env.OPENROUTER_API_KEY;
-const HAS_KV = !!(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+const HAS_KV = !!process.env.KV_REST_API_REDIS_URL;
 const HAS_EMAIL = !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
 
-// ─── PRODUCT DATABASE ───
 const PRODUCTS = {
   "cushion foundation 1.5": { name: "Cushion Foundation Shade 1.5", price: 3000, stock: 16, category: "foundation", type: "cushion" },
   "cushion foundation 3.0": { name: "Cushion Foundation Shade 3.0", price: 3000, stock: 5, category: "foundation", type: "cushion" },
@@ -55,11 +53,7 @@ const PRODUCTS = {
   "brush set": { name: "Signature Brush Set", price: 5000, stock: 1376, category: "brush", type: "set" },
 };
 
-const DELIVERY = {
-  insideDhaka: { cost: 60, time: "72 hours" },
-  outsideDhaka: { cost: 100, time: "48 hours dispatch" },
-  method: "Pathao",
-};
+const DELIVERY = { insideDhaka: { cost: 60, time: "72 hours" }, outsideDhaka: { cost: 100, time: "48 hours dispatch" }, method: "Pathao" };
 
 const CATEGORIES = {
   lipstick: { keywords: ["lipstick", "lip stick", "লিপস্টিক", "লিপ", "lipstik"], label: "Lipstick" },
@@ -94,54 +88,11 @@ const BK = {
   quiz: ["shade match", "kon shade", "which shade", "recommend", "suggest", "match korbe", "suit korbe", "suitable"],
 };
 
-const KNOWLEDGE_BASE = `
-Brand: LOIS CHLOÉ — 100% Australian cosmetics brand 🇦🇺
-Official distributor in Bangladesh.
-All products are original, cruelty-free, dermatologically tested.
-Halal-certified ingredients. Safe for sensitive skin.
-
-Application tips:
-- Cushion Foundation: Pat gently with sponge for natural coverage.
-- Concealer: Apply under eyes and on blemishes, blend with finger tip.
-- Bullet Matte Lipstick: Long-lasting, transfer-proof after setting.
-- Liquid Matte: Apply one layer, let dry 30s before second layer.
-- Velvet Matte: Comfortable for everyday wear, doesn't dry out lips.
-- Brush Set: Includes foundation, powder, blush, eye, and detail brushes.
-
-Shade matching guide:
-- Shade 1.5 suits fair/light skin tones.
-- Shade 3.0 suits medium/warm Bangladeshi skin tones (most popular).
-
-Storage: Keep in cool dry place. Shelf life: 24 months unopened, 12 months after opening.
-`;
+const KNOWLEDGE_BASE = `Brand: LOIS CHLOÉ — 100% Australian cosmetics brand 🇦🇺. Official distributor in Bangladesh. All products are original, cruelty-free, dermatologically tested. Halal-certified ingredients. Safe for sensitive skin. Application tips: Cushion Foundation: Pat gently with sponge. Concealer: Apply under eyes and blend. Bullet Matte: Long-lasting, transfer-proof. Liquid Matte: One layer, dry 30s before second. Velvet Matte: Comfortable everyday wear. Brush Set: Full range. Shade guide: 1.5 fair/light, 3.0 medium/warm (most popular Bangladeshi skin). Storage: Cool dry place. Shelf life: 24mo unopened, 12mo opened.`;
 
 function buildSystemPrompt() {
-  const productLines = Object.values(PRODUCTS)
-    .map(p => `- ${p.name}: ৳${p.price.toLocaleString()}, ${p.stock > 0 ? "in stock" : "out of stock"}, ${p.category}, ${p.type}`)
-    .join("\n");
-  return `You are LOIS CHLOÉ Bangladesh's customer support bot on Facebook Messenger.
-
-Brand info:
-${KNOWLEDGE_BASE}
-
-Product catalog (all prices in BDT/Taka):
-${productLines}
-
-Delivery:
-- Inside Dhaka: ৳60, delivered in 72 hours via Pathao
-- Outside Dhaka: ৳100, dispatched in 48 hours via Pathao
-
-Payment: COD, bKash, Nagad, Rocket accepted
-
-Instructions:
-1. ALWAYS reply in Banglish (Bangla written in English letters) — Bangladeshi customers prefer this.
-2. Keep replies short and conversational (2-4 sentences max).
-3. Use emojis naturally (💄 🌸 ✨ 😊).
-4. When recommending shades, consider Bangladeshi skin tones — most are warm/medium.
-5. If asked about a product that's out of stock, suggest available alternatives in the same category.
-6. If asked about orders, ask for: name, address, phone number.
-7. Never make up products or prices not in the catalog.
-8. Be warm and friendly — treat every customer like a VIP.`;
+  const productLines = Object.values(PRODUCTS).map(p => `- ${p.name}: ৳${p.price.toLocaleString()}, ${p.stock > 0 ? "in stock" : "out of stock"}, ${p.category}, ${p.type}`).join("\n");
+  return `You are LOIS CHLOÉ Bangladesh's customer support bot on Facebook Messenger.\n\nBrand info:\n${KNOWLEDGE_BASE}\n\nProduct catalog (BDT):\n${productLines}\n\nDelivery: Inside Dhaka ৳60 (72h), Outside Dhaka ৳100 (48h) via Pathao.\nPayment: COD, bKash, Nagad, Rocket.\n\nInstructions:\n1. ALWAYS reply in Banglish. 2. Keep replies 2-4 sentences max. 3. Use emojis naturally. 4. Recommend warm/medium shades for Bangladeshi skin. 5. For out-of-stock, suggest alternatives. 6. For orders, ask name/address/phone. 7. Never make up products. 8. Be warm and VIP-friendly.`;
 }
 
 export default async function handler(req, res) {
@@ -290,17 +241,8 @@ async function llmFallback(userMessage, state) {
     const context = state?.lastProduct ? `\nContext: Customer previously asked about ${state.lastProduct.name}.` : "";
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://lois-chloe-crm.vercel.app",
-        "X-Title": "LOIS CHLOE CRM Bot",
-      },
-      body: JSON.stringify({
-        model: "anthropic/claude-3.5-haiku",
-        messages: [{ role: "system", content: systemPrompt + context }, { role: "user", content: userMessage }],
-        max_tokens: 400, temperature: 0.7,
-      }),
+      headers: { "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": "https://lois-chloe-crm.vercel.app", "X-Title": "LOIS CHLOE CRM Bot" },
+      body: JSON.stringify({ model: "anthropic/claude-3.5-haiku", messages: [{ role: "system", content: systemPrompt + context }, { role: "user", content: userMessage }], max_tokens: 400, temperature: 0.7 }),
     });
     const data = await response.json();
     if (data.choices?.[0]?.message?.content) return data.choices[0].message.content.trim();
@@ -316,20 +258,8 @@ async function analyzeImage(imageUrl) {
   try {
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://lois-chloe-crm.vercel.app",
-        "X-Title": "LOIS CHLOE CRM Bot",
-      },
-      body: JSON.stringify({
-        model: "anthropic/claude-3.5-haiku",
-        messages: [
-          { role: "system", content: buildSystemPrompt() + "\n\nCustomer sent a photo. Guess what they want and respond helpfully in Banglish. 2-3 sentences." },
-          { role: "user", content: [{ type: "text", text: "Customer sent this image." }, { type: "image_url", image_url: { url: imageUrl } }] },
-        ],
-        max_tokens: 300,
-      }),
+      headers: { "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`, "Content-Type": "application/json", "HTTP-Referer": "https://lois-chloe-crm.vercel.app", "X-Title": "LOIS CHLOE CRM Bot" },
+      body: JSON.stringify({ model: "anthropic/claude-3.5-haiku", messages: [{ role: "system", content: buildSystemPrompt() + "\n\nCustomer sent a photo. Guess what they want and respond helpfully in Banglish. 2-3 sentences." }, { role: "user", content: [{ type: "text", text: "Customer sent this image." }, { type: "image_url", image_url: { url: imageUrl } }] }], max_tokens: 300 }),
     });
     const data = await response.json();
     if (data.choices?.[0]?.message?.content) return data.choices[0].message.content.trim();
@@ -402,6 +332,25 @@ function tryParseOrder(text) {
   return { phone, name, address, raw: text };
 }
 
+// ─── Upstash/Redis via ioredis (TCP) ───
+let _redisClient = null;
+async function kvCommand(args) {
+  if (!process.env.KV_REST_API_REDIS_URL) return null;
+  try {
+    if (!_redisClient) {
+      const { default: Redis } = await import('ioredis');
+      _redisClient = new Redis(process.env.KV_REST_API_REDIS_URL, { maxRetriesPerRequest: 1, connectTimeout: 3000, enableReadyCheck: false });
+    }
+    const cmd = args[0].toLowerCase();
+    const params = args.slice(1);
+    const result = await _redisClient[cmd](...params);
+    return { result };
+  } catch (err) {
+    console.error("kvCommand failed:", err);
+    return null;
+  }
+}
+
 async function logMessage(senderId, direction, text, hasAttachment, intent = null) {
   if (!HAS_KV) return;
   try {
@@ -433,20 +382,9 @@ async function saveState(senderId, state) {
   } catch (err) { console.error("saveState failed:", err); }
 }
 
-async function kvCommand(args) {
-  const url = process.env.KV_REST_API_URL;
-  const token = process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  try {
-    const res = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(args) });
-    return await res.json();
-  } catch (err) { console.error("kvCommand failed:", err); return null; }
-}
-
 async function sendEmail(subject, htmlBody) {
   if (!HAS_EMAIL) { console.log("EMAIL (would send):", subject, htmlBody.slice(0, 200)); return; }
-  try { console.log("📧 EMAIL ALERT:", subject, "\n", htmlBody); }
-  catch (err) { console.error("sendEmail failed:", err); }
+  try { console.log("📧 EMAIL ALERT:", subject, "\n", htmlBody); } catch (err) { console.error("sendEmail failed:", err); }
 }
 
 async function notifyOrderCapture(senderId, order, rawMessage) {
@@ -458,7 +396,7 @@ async function notifyOrderCapture(senderId, order, rawMessage) {
 
 async function notifyEscalation(senderId, lastMessage, fallbackCount) {
   const subject = `⚠️ Bot Escalation — Customer needs human attention`;
-  const body = `<h2>Bot couldn't handle ${fallbackCount} messages</h2><p><b>Sender:</b> ${senderId}</p><p><b>Last message:</b> "${lastMessage}"</p><p>Jump into Messenger: https://business.facebook.com/latest/inbox/all?asset_id=106519769015566</p>`;
+  const body = `<h2>Bot couldn't handle ${fallbackCount} messages</h2><p><b>Sender:</b> ${senderId}</p><p><b>Last message:</b> "${lastMessage}"</p><p>Jump in: https://business.facebook.com/latest/inbox/all?asset_id=106519769015566</p>`;
   await sendEmail(subject, body);
 }
 
